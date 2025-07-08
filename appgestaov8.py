@@ -283,7 +283,8 @@ elif st.session_state.authenticated:
 
                             st.success(f"✅ Arquivo '{filename}' salvo com sucesso.")
                             log_action(username, "upload", file_path)
-    # VISUALIZAÇÃO HIERÁRQUICA DOS DOCUMENTOS
+
+        # VISUALIZAÇÃO HIERÁRQUICA DOS DOCUMENTOS
     if "download" in user_permissions or "view" in user_permissions:
         st.markdown("### 📂 Navegação por Projetos")
 
@@ -304,6 +305,11 @@ elif st.session_state.authenticated:
                             with st.expander(f"📄 Fase: {fase}", expanded=False):
                                 for file in sorted(os.listdir(fase_path)):
                                     full_path = os.path.join(fase_path, file)
+
+                                    # ✅ Ignorar diretórios (ex: Revisoes/)
+                                    if os.path.isdir(full_path):
+                                        continue
+
                                     icon = file_icon(file)
                                     st.markdown(f"- {icon} `{file}`")
 
@@ -329,7 +335,9 @@ elif st.session_state.authenticated:
                                                 st.download_button("📥 Baixar Arquivo", f, file_name=file, key=hash_key("oth_" + full_path))
 
                                     log_action(username, "visualizar", full_path)
-    # PESQUISA POR PALAVRA-CHAVE
+
+    
+        # PESQUISA POR PALAVRA-CHAVE
     if "download" in user_permissions or "view" in user_permissions:
         st.markdown("### 🔍 Pesquisa de Documentos")
         keyword = st.text_input("Buscar por palavra-chave")
