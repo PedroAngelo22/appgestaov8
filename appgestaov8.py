@@ -2,7 +2,6 @@ import os
 import shutil
 import base64
 import hashlib
-import re
 from datetime import datetime
 import streamlit as st
 import sqlite3
@@ -40,6 +39,13 @@ def get_project_path(project, discipline, phase):
     os.makedirs(path, exist_ok=True)
     return path
 
+def save_versioned_file(file_path):
+    if os.path.exists(file_path):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base, ext = os.path.splitext(file_path)
+        versioned_path = f"{base}_v{timestamp}{ext}"
+        shutil.move(file_path, versioned_path)
+
 def log_action(user, action, file, note=None):
     log_entry = f"{file} ({note})" if note else file
     c.execute("INSERT INTO logs (timestamp, user, action, file) VALUES (?, ?, ?, ?)",
@@ -57,42 +63,6 @@ def file_icon(file_name):
 def hash_key(text):
     return hashlib.md5(text.encode()).hexdigest()
 
-def extract_base_and_revision(filename):
-    match = re.match(r"(.+?)(r\d+)v(\d+)", filename, re.IGNORECASE)
-    if match:
-        base_name = match.group(1)
-        rev = match.group(2).lower()
-        ver = match.group(3)
-        return base_name, rev, ver
-    return filename, None, None
-
-def handle_file_versioning(path, filename):
-    """
-    Implementa a lógica de controle de revisão e versão:
-    - Bloqueia envio de arquivo com mesmo nome completo
-    - Aceita nova revisão e move a anterior para subpasta
-    - Alerta se mesma revisão e versão diferente
-    """
-    base, rev, ver = extract_base_and_revision(filename)
-    existing_files = os.listdir(path)
-    same_name = [f for f in existing_files if f == filename]
-    if same_name:
-        st.error(f"Arquivo '{filename}' já existe. Envio bloqueado.")
-        return False
-
-    revision_conflict = [f for f in existing_files if f.startswith(base) and f"{rev}" in f and f != filename]
-    if revision_conflict and f"{rev}v" in filename.lower():
-        st.warning(f"Já existe arquivo com revisão {rev}. Verifique se está correta antes de enviar.")
-        if not st.checkbox("Confirmo que a revisão está correta"):
-            return False
-
-    revision_folder = os.path.join(path, base.strip("-") + "_revisoes")
-    os.makedirs(revision_folder, exist_ok=True)
-    for f in existing_files:
-        if f.startswith(base) and f != filename and f"{rev}" in f:
-            shutil.move(os.path.join(path, f), os.path.join(revision_folder, f))
-            log_action(st.session_state.username, "mover para revisão", f"de {f} para {revision_folder}")
-    return True
 # Estado da sessão
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
@@ -106,7 +76,6 @@ if "admin_authenticated" not in st.session_state:
     st.session_state.admin_authenticated = False
 
 st.title("📁 Gerenciador de Documentos Inteligente")
-
 # LOGIN
 if not st.session_state.authenticated and not st.session_state.registration_mode and not st.session_state.admin_mode:
     st.subheader("Login")
@@ -160,7 +129,7 @@ elif st.session_state.registration_mode and not st.session_state.authenticated:
         st.session_state.registration_unlocked = False
         st.rerun()
 
-# PAINEL ADMINISTRATIVO
+# AUTENTICAÇÃO ADMINISTRADOR
 elif st.session_state.admin_mode and not st.session_state.admin_authenticated:
     st.subheader("Autenticação do Administrador")
     master = st.text_input("Senha Mestra", type="password")
@@ -172,6 +141,7 @@ elif st.session_state.admin_mode and not st.session_state.admin_authenticated:
         else:
             st.error("Senha incorreta.")
 
+# PAINEL ADMINISTRATIVO
 elif st.session_state.admin_mode and st.session_state.admin_authenticated:
     st.subheader("Painel Administrativo")
 
@@ -232,8 +202,7 @@ elif st.session_state.admin_mode and st.session_state.admin_authenticated:
         st.session_state.admin_authenticated = False
         st.session_state.admin_mode = False
         st.rerun()
-
-# USUÁRIO AUTENTICADO E UPLOAD COM CONTROLE DE VERSÃO
+# USUÁRIO AUTENTICADO
 elif st.session_state.authenticated:
     username = st.session_state.username
     user_data = c.execute("SELECT projects, permissions FROM users WHERE username=?", (username,)).fetchone()
@@ -246,49 +215,94 @@ elif st.session_state.authenticated:
         st.session_state.username = ""
         st.rerun()
 
-    if "upload" in user_permissions:
-        st.markdown("### ⬆️ Upload de Arquivos")
-        with st.form("upload_form"):
-            if not user_projects:
-                st.warning("Você ainda não tem projetos atribuídos.")
-            else:
-                project = st.selectbox("Projeto", user_projects)
-                discipline = st.selectbox("Disciplina", st.session_state.disciplinas)
-                phase = st.selectbox("Fase", st.session_state.fases)
-                uploaded_file = st.file_uploader("Escolha o arquivo")
+    # UPLOAD
+if "upload" in user_permissions:
+    st.markdown("### ⬆️ Upload de Arquivos")
+    with st.form("upload_form"):
+        if not user_projects:
+            st.warning("Você ainda não tem projetos atribuídos. Contate o administrador.")
+        else:
+            project = st.selectbox("Projeto", user_projects)
+            discipline = st.selectbox("Disciplina", st.session_state.disciplinas)
+            phase = st.selectbox("Fase", st.session_state.fases)
+            uploaded_file = st.file_uploader("Escolha o arquivo")
+            confirmar_mesma_revisao = st.checkbox("Confirmo que estou mantendo a mesma revisão e subindo nova versão")
 
-                submitted = st.form_submit_button("Enviar")
-                if submitted and uploaded_file:
-                    filename = uploaded_file.name
-                    path = get_project_path(project, discipline, phase)
+            submitted = st.form_submit_button("Enviar")
+            if submitted and uploaded_file:
+                filename = uploaded_file.name
+                path = get_project_path(project, discipline, phase)
+                file_path = os.path.join(path, filename)
 
-                    # Aplica controle de versão
-                    if handle_file_versioning(path, filename):
-                        file_path = os.path.join(path, filename)
+                nome_base, revisao, versao = extrair_info_arquivo(filename)
+
+                if not nome_base:
+                    st.error("O nome do arquivo deve seguir o padrão: NOME-BASE_rXvY.extensão")
+                else:
+                    arquivos_existentes = os.listdir(path)
+                    nomes_existentes = [f for f in arquivos_existentes if f.startswith(nome_base)]
+
+                    # 1. Bloqueio de nome idêntico
+                    if filename in arquivos_existentes:
+                        st.error("Arquivo com este nome completo já existe.")
+
+                    else:
+                        # 2. Identificação de revisão existente e nova
+                        revisoes_anteriores = []
+                        for f in nomes_existentes:
+                            base_ant, rev_ant, ver_ant = extrair_info_arquivo(f)
+                            if base_ant == nome_base:
+                                revisoes_anteriores.append((f, rev_ant, ver_ant))
+
+                        existe_revisao_anterior = any(r[1] != revisao for r in revisoes_anteriores)
+                        mesma_revisao_outras_versoes = any(r[1] == revisao and r[2] != versao for r in revisoes_anteriores)
+
+                        if existe_revisao_anterior and all(r[1] != revisao for r in revisoes_anteriores):
+                            # Nova revisão: mover arquivos anteriores
+                            pasta_revisao = os.path.join(path, "Revisoes", nome_base)
+                            os.makedirs(pasta_revisao, exist_ok=True)
+                            for f, _, _ in revisoes_anteriores:
+                                shutil.move(os.path.join(path, f), os.path.join(pasta_revisao, f))
+                            st.info(f"Arquivos da revisão anterior movidos para {pasta_revisao}.")
+
+                        elif mesma_revisao_outras_versoes and not confirmar_mesma_revisao:
+                            st.warning("Detectada mesma revisão com versão diferente. Marque a caixa de confirmação para prosseguir.")
+                            st.stop()
+
                         with open(file_path, "wb") as f:
                             f.write(uploaded_file.read())
+
                         st.success(f"Arquivo '{filename}' salvo com sucesso.")
                         log_action(username, "upload", file_path)
-    # VISUALIZAÇÃO HIERÁRQUICA
+
+# Função para extrair nome-base, revisão e versão
+import re
+def extrair_info_arquivo(nome_arquivo):
+    padrao = r"(.+)_r(\d+)v(\d+)\\.\w+$"
+    match = re.match(padrao, nome_arquivo)
+    if match:
+        nome_base = match.group(1)
+        revisao = f"r{match.group(2)}"
+        versao = f"v{match.group(3)}"
+        return nome_base, revisao, versao
+    return None, None, None
+    # VISUALIZAÇÃO HIERÁRQUICA COM EXPANDERS
     if "download" in user_permissions or "view" in user_permissions:
-        st.markdown("### 📂 Navegação por Projetos")
+        st.markdown("### 📂 PROJETOS")
 
         for proj in sorted(os.listdir(BASE_DIR)):
             proj_path = os.path.join(BASE_DIR, proj)
-            if not os.path.isdir(proj_path):
-                continue
+            if not os.path.isdir(proj_path): continue
 
             with st.expander(f"📁 Projeto: {proj}", expanded=False):
                 for disc in sorted(os.listdir(proj_path)):
                     disc_path = os.path.join(proj_path, disc)
-                    if not os.path.isdir(disc_path):
-                        continue
+                    if not os.path.isdir(disc_path): continue
 
                     with st.expander(f"📂 Disciplina: {disc}", expanded=False):
                         for fase in sorted(os.listdir(disc_path)):
                             fase_path = os.path.join(disc_path, fase)
-                            if not os.path.isdir(fase_path):
-                                continue
+                            if not os.path.isdir(fase_path): continue
 
                             with st.expander(f"📄 Fase: {fase}", expanded=False):
                                 for file in sorted(os.listdir(fase_path)):
@@ -318,7 +332,6 @@ elif st.session_state.authenticated:
                                                 st.download_button("📥 Baixar Arquivo", f, file_name=file, key=hash_key("oth_" + full_path))
 
                                     log_action(username, "visualizar", full_path)
-
     # PESQUISA POR PALAVRA-CHAVE
     if "download" in user_permissions or "view" in user_permissions:
         st.markdown("### 🔍 Pesquisa de Documentos")
