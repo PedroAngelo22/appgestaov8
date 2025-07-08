@@ -35,7 +35,7 @@ if "fases" not in st.session_state:
 if "projetos_registrados" not in st.session_state:
     st.session_state.projetos_registrados = []
 
-# Funções utilitárias
+# Utilitários
 def get_project_path(project, discipline, phase):
     path = os.path.join(BASE_DIR, project, discipline, phase)
     os.makedirs(path, exist_ok=True)
@@ -59,10 +59,11 @@ def hash_key(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 def extrair_info_arquivo(nome_arquivo):
-    padrao = r"(.+)_r(\d+)v(\d+)\.\w+$"
+    # Permite nomes com textos antes/depois, sem exigência de separador antes do rXvY
+    padrao = r"(.+?)r(\d+)v(\d+).*?\.\w+$"
     match = re.match(padrao, nome_arquivo)
     if match:
-        nome_base = match.group(1)
+        nome_base = match.group(1).rstrip(" _-")
         revisao = f"r{match.group(2)}"
         versao = f"v{match.group(3)}"
         return nome_base, revisao, versao
@@ -220,7 +221,7 @@ elif st.session_state.authenticated:
         st.session_state.username = ""
         st.rerun()
 
-    # UPLOAD COM CONTROLE DE REVISÃO E VERSÃO
+    # UPLOAD DE ARQUIVOS COM FEEDBACK DE REVISÃO/VERSÃO
     if "upload" in user_permissions:
         st.markdown("### ⬆️ Upload de Arquivos")
         with st.form("upload_form"):
@@ -233,6 +234,14 @@ elif st.session_state.authenticated:
                 uploaded_file = st.file_uploader("Escolha o arquivo")
                 confirmar_mesma_revisao = st.checkbox("Confirmo que estou mantendo a mesma revisão e subindo nova versão")
 
+                # Mostrar dados extraídos antes do envio
+                if uploaded_file:
+                    nome_base, revisao, versao = extrair_info_arquivo(uploaded_file.name)
+                    if nome_base and revisao and versao:
+                        st.info(f"🧠 Detecção automática: **{uploaded_file.name}** → Revisão: **{revisao}**, Versão: **{versao}**")
+                    else:
+                        st.error("❌ O nome do arquivo deve seguir o padrão: ...rXvY.extensão")
+
                 submitted = st.form_submit_button("Enviar")
                 if submitted and uploaded_file:
                     filename = uploaded_file.name
@@ -240,9 +249,8 @@ elif st.session_state.authenticated:
                     file_path = os.path.join(path, filename)
 
                     nome_base, revisao, versao = extrair_info_arquivo(filename)
-
                     if not nome_base:
-                        st.error("O nome do arquivo deve seguir o padrão: NOME-BASE_rXvY.extensão")
+                        st.error("O nome do arquivo deve conter algo como rXvY (ex: r1v2) para controle de revisão.")
                     else:
                         arquivos_existentes = os.listdir(path)
                         nomes_existentes = [f for f in arquivos_existentes if f.startswith(nome_base)]
@@ -264,21 +272,20 @@ elif st.session_state.authenticated:
                                 os.makedirs(pasta_revisao, exist_ok=True)
                                 for f, _, _ in revisoes_anteriores:
                                     shutil.move(os.path.join(path, f), os.path.join(pasta_revisao, f))
-                                st.info(f"Arquivos da revisão anterior movidos para {pasta_revisao}.")
+                                st.info(f"🗂️ Arquivos da revisão anterior foram movidos para `{pasta_revisao}`")
 
                             elif mesma_revisao_outras_versoes and not confirmar_mesma_revisao:
-                                st.warning("Detectada mesma revisão com versão diferente. Marque a caixa de confirmação para prosseguir.")
+                                st.warning("⚠️ Detecção: mesma revisão, nova versão. Marque a confirmação para continuar.")
                                 st.stop()
 
                             with open(file_path, "wb") as f:
                                 f.write(uploaded_file.read())
 
-                            st.success(f"Arquivo '{filename}' salvo com sucesso.")
+                            st.success(f"✅ Arquivo '{filename}' salvo com sucesso.")
                             log_action(username, "upload", file_path)
-
     # VISUALIZAÇÃO HIERÁRQUICA DOS DOCUMENTOS
     if "download" in user_permissions or "view" in user_permissions:
-        st.markdown("### 📂 PROJETOS")
+        st.markdown("### 📂 Navegação por Projetos")
 
         for proj in sorted(os.listdir(BASE_DIR)):
             proj_path = os.path.join(BASE_DIR, proj)
@@ -302,7 +309,7 @@ elif st.session_state.authenticated:
 
                                     with open(full_path, "rb") as f:
                                         b64 = base64.b64encode(f.read()).decode("utf-8")
-                                        if file.endswith(".pdf"):
+                                        if file.lower().endswith(".pdf"):
                                             href = f'<a href="data:application/pdf;base64,{b64}" target="_blank">🔍 Visualizar PDF</a>'
                                             if st.button(f"🔍 Abrir PDF ({file})", key=hash_key("btn_" + full_path)):
                                                 st.markdown(href, unsafe_allow_html=True)
@@ -313,7 +320,7 @@ elif st.session_state.authenticated:
                                             try:
                                                 st.image(f.read(), caption=file)
                                             except Exception as e:
-                                                st.warning(f"Não foi possível exibir a imagem '{file}': {str(e)}")
+                                                st.warning(f"Erro ao exibir a imagem '{file}': {str(e)}")
                                             f.seek(0)
                                             if "download" in user_permissions:
                                                 st.download_button("📥 Baixar Imagem", f, file_name=file, key=hash_key("img_" + full_path))
